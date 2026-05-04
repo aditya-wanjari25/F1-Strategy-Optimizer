@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.DS_Store
+fastf1_cache/
+*.ipynb_checkpoints
+LEARNINGS.md
