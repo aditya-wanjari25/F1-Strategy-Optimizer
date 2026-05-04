@@ -91,20 +91,22 @@ def get_driver_laps(year: int, grand_prix: str, driver: str) -> pd.DataFrame:
 
 # ── Tool 3: Stint Analysis ───────────────────────────────────────────────────
 def get_driver_stints(year: int, grand_prix: str, driver: str) -> list[StintInfo]:
-    """
-    Breaks a driver's race into stints and computes degradation per stint.
-    This is the core input for the Tire Agent.
-    """
     laps = get_driver_laps(year, grand_prix, driver)
 
     if laps.empty:
         log.warning("no_laps_found", driver=driver)
         return []
 
-    stints = []
-    # Group by TyreLife reset points (new stint = TyreLife resets to 1)
-    laps["StintNumber"] = (laps["TyreLife"] == 1).cumsum()
+    # Detect new stint when TyreLife resets (drops) or compound changes
+    # This is more robust than checking TyreLife == 1
+  # Detect new stint only when compound changes — gaps in accurate laps don't count
+    laps["NewStint"] = (
+    laps["Compound"] != laps["Compound"].shift(1)
+    ).fillna(True)  # first lap is always a new stint # first lap is always a new stint
 
+    laps["StintNumber"] = laps["NewStint"].cumsum()
+
+    stints = []
     for stint_num, group in laps.groupby("StintNumber"):
         group = group.dropna(subset=["LapTimeSec"])
         if len(group) < 2:
@@ -112,15 +114,7 @@ def get_driver_stints(year: int, grand_prix: str, driver: str) -> list[StintInfo
 
         compound = group["Compound"].mode()[0]
         lap_times = group["LapTimeSec"].values
-
-        # Linear degradation: slope of lap time over tyre life
-        tyre_life = group["TyreLife"].values
-        if len(tyre_life) > 1:
-            deg = float(
-                pd.Series(lap_times).diff().mean()
-            )  # avg delta per lap
-        else:
-            deg = 0.0
+        deg = float(pd.Series(lap_times).diff().mean())
 
         stints.append(
             StintInfo(

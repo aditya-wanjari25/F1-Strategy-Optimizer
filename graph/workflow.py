@@ -13,6 +13,7 @@ this file is the wiring between them.
 import structlog
 from langgraph.graph import StateGraph, END
 from graph.state import AgentState
+from agents.tire_agent import run_tire_agent
 
 log = structlog.get_logger()
 
@@ -97,7 +98,7 @@ def build_graph() -> StateGraph:
 
     # Register nodes
     graph.add_node("supervisor",    supervisor_node)
-    graph.add_node("tire_agent",    tire_agent_node)
+    graph.add_node("tire_agent",    run_tire_agent)
     graph.add_node("weather_agent", weather_agent_node)
     graph.add_node("competitor_agent", competitor_agent_node)
     graph.add_node("synthesizer",   synthesizer_node)
