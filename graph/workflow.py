@@ -16,6 +16,7 @@ from graph.state import AgentState
 from agents.tire_agent import run_tire_agent
 from agents.weather_agent import run_weather_agent
 from agents.competitor_agent import run_competitor_agent
+from agents.synthesizer import run_synthesizer
 
 log = structlog.get_logger()
 
@@ -103,7 +104,7 @@ def build_graph() -> StateGraph:
     graph.add_node("tire_agent",    run_tire_agent)
     graph.add_node("weather_agent", run_weather_agent)
     graph.add_node("competitor_agent", run_competitor_agent)
-    graph.add_node("synthesizer",   synthesizer_node)
+    graph.add_node("synthesizer",   run_synthesizer)
 
     # Entry point — always start at the supervisor
     graph.set_entry_point("supervisor")
