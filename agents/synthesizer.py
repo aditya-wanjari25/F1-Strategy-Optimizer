@@ -19,6 +19,7 @@ import structlog
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from graph.state import AgentState, StrategyRecommendation
+from observability.tracing import agent_observation, generation_observation
 
 log = structlog.get_logger()
 
@@ -105,38 +106,42 @@ def run_synthesizer(state: AgentState) -> dict:
     log.info("synthesizer_start", driver=driver, grand_prix=grand_prix, year=year)
 
     try:
-        # 1. Format all agent findings into one brief
-        findings_text = format_agent_findings(state)
-        log.info("synthesizer_data_ready", char_count=len(findings_text))
+        with agent_observation("synthesizer", {"driver": driver, "grand_prix": grand_prix, "year": year}) as obs:
 
-        # 2. Call the LLM
-        messages = [
-            SystemMessage(content=SYNTHESIZER_SYSTEM_PROMPT),
-            HumanMessage(content=findings_text),
-        ]
-        response = llm.invoke(messages)
-        raw = response.content.strip()
-        log.info("synthesizer_llm_response", raw=raw)
+            findings_text = format_agent_findings(state)
 
-        # 3. Parse response
-        parsed = json.loads(raw)
+            messages = [
+                SystemMessage(content=SYNTHESIZER_SYSTEM_PROMPT),
+                HumanMessage(content=findings_text),
+            ]
 
-        # 4. Build typed StrategyRecommendation
-        recommendation = StrategyRecommendation(
-            pit_laps=parsed["pit_laps"],
-            compounds=parsed["compounds"],
-            rationale=parsed["rationale"],
-            confidence=parsed["confidence"],
-        )
+            with generation_observation("synthesizer", "gpt-4o", findings_text) as gen:
+                response = llm.invoke(messages)
+                raw = response.content.strip()
+                gen.update(output=raw)
 
-        log.info(
-            "synthesizer_complete",
-            pit_laps=recommendation.pit_laps,
-            compounds=recommendation.compounds,
-            confidence=recommendation.confidence,
-        )
+            parsed = json.loads(raw)
+            recommendation = StrategyRecommendation(
+                pit_laps=parsed["pit_laps"],
+                compounds=parsed["compounds"],
+                rationale=parsed["rationale"],
+                confidence=parsed["confidence"],
+            )
 
-        return {"strategy_recommendation": recommendation}
+            obs.update(output={
+                "pit_laps":   recommendation.pit_laps,
+                "compounds":  recommendation.compounds,
+                "confidence": recommendation.confidence,
+            })
+
+            log.info(
+                "synthesizer_complete",
+                pit_laps=recommendation.pit_laps,
+                compounds=recommendation.compounds,
+                confidence=recommendation.confidence,
+            )
+
+            return {"strategy_recommendation": recommendation}
 
     except Exception as e:
         log.error("synthesizer_error", error=str(e))

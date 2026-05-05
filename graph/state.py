@@ -71,3 +71,4 @@ class AgentState(dict):
     # ── Control flow ─────────────────────────────────────────────────────────
     next_agent: str             # supervisor uses this to route to next agent
     errors: list[str]           # any agent can append errors here
+    trace: object | None        # LangFuse trace object for observability

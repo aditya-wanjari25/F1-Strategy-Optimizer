@@ -16,6 +16,8 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from graph.state import AgentState, WeatherAnalysis
 from tools.fastf1_tools import get_race_weather
+from observability.tracing import agent_observation, generation_observation
+
 
 log = structlog.get_logger()
 
@@ -99,38 +101,41 @@ def run_weather_agent(state: AgentState) -> dict:
     log.info("weather_agent_start", grand_prix=grand_prix, year=year)
 
     try:
-        # 1. Fetch and format weather data
-        weather_text = format_weather_data(year, grand_prix)
-        log.info("weather_agent_data_ready", char_count=len(weather_text))
+        with agent_observation("weather_agent", {"grand_prix": grand_prix, "year": year}) as obs:
 
-        # 2. Call the LLM
-        messages = [
-            SystemMessage(content=WEATHER_SYSTEM_PROMPT),
-            HumanMessage(content=weather_text),
-        ]
-        response = llm.invoke(messages)
-        raw = response.content.strip()
-        log.info("weather_agent_llm_response", raw=raw)
+            weather_text = format_weather_data(year, grand_prix)
 
-        # 3. Parse response
-        parsed = json.loads(raw)
+            messages = [
+                SystemMessage(content=WEATHER_SYSTEM_PROMPT),
+                HumanMessage(content=weather_text),
+            ]
 
-        # 4. Build typed WeatherAnalysis
-        weather_analysis = WeatherAnalysis(
-            has_rain=parsed["has_rain"],
-            track_temp_trend=parsed["track_temp_trend"],
-            risk_level=parsed["risk_level"],
-            summary=parsed["summary"],
-        )
+            with generation_observation("weather_agent", "gpt-4o-mini", weather_text) as gen:
+                response = llm.invoke(messages)
+                raw = response.content.strip()
+                gen.update(output=raw)
 
-        log.info(
-            "weather_agent_complete",
-            has_rain=weather_analysis.has_rain,
-            risk_level=weather_analysis.risk_level,
-            trend=weather_analysis.track_temp_trend,
-        )
+            parsed = json.loads(raw)
+            weather_analysis = WeatherAnalysis(
+                has_rain=parsed["has_rain"],
+                track_temp_trend=parsed["track_temp_trend"],
+                risk_level=parsed["risk_level"],
+                summary=parsed["summary"],
+            )
 
-        return {"weather_analysis": weather_analysis}
+            obs.update(output={
+                "has_rain":         weather_analysis.has_rain,
+                "track_temp_trend": weather_analysis.track_temp_trend,
+                "risk_level":       weather_analysis.risk_level,
+            })
+
+            log.info(
+                "weather_agent_complete",
+                has_rain=weather_analysis.has_rain,
+                risk_level=weather_analysis.risk_level,
+            )
+
+            return {"weather_analysis": weather_analysis}
 
     except Exception as e:
         log.error("weather_agent_error", error=str(e))

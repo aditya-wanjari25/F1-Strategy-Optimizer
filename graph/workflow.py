@@ -17,6 +17,7 @@ from agents.tire_agent import run_tire_agent
 from agents.weather_agent import run_weather_agent
 from agents.competitor_agent import run_competitor_agent
 from agents.synthesizer import run_synthesizer
+from observability.tracing import get_langfuse, flush
 
 log = structlog.get_logger()
 
@@ -131,23 +132,40 @@ def build_graph() -> StateGraph:
 
 # ── Convenience runner ────────────────────────────────────────────────────────
 def run_graph(year: int, grand_prix: str, driver: str) -> AgentState:
-    """Entry point to run the full strategy optimizer."""
-    graph = build_graph()
+    lf = get_langfuse()
 
-    initial_state: AgentState = {
-        "year": year,
-        "grand_prix": grand_prix,
-        "driver": driver,
-        "tire_analysis": None,
-        "weather_analysis": None,
-        "competitor_analysis": None,
-        "strategy_recommendation": None,
-        "messages": [],
-        "next_agent": "",
-        "errors": [],
-    }
+    with lf.start_as_current_observation(
+        name="f1_strategy_optimizer",
+        as_type="agent",
+        input={"year": year, "grand_prix": grand_prix, "driver": driver},
+    ) as trace:
 
-    log.info("graph_start", year=year, grand_prix=grand_prix, driver=driver)
-    result = graph.invoke(initial_state)
-    log.info("graph_complete")
+        graph = build_graph()
+        initial_state: AgentState = {
+            "year": year,
+            "grand_prix": grand_prix,
+            "driver": driver,
+            "tire_analysis": None,
+            "weather_analysis": None,
+            "competitor_analysis": None,
+            "strategy_recommendation": None,
+            "messages": [],
+            "next_agent": "",
+            "errors": [],
+        }
+
+        log.info("graph_start", year=year, grand_prix=grand_prix, driver=driver)
+        result = graph.invoke(initial_state)
+
+        sr = result.get("strategy_recommendation")
+        if sr:
+            trace.update(output={
+                "compounds":  sr.compounds,
+                "pit_laps":   sr.pit_laps,
+                "confidence": sr.confidence,
+            })
+
+        log.info("graph_complete")
+
+    flush()
     return result

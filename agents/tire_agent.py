@@ -1,30 +1,19 @@
-"""
-Tire Agent — Analyzes tyre strategy for a given driver.
-
-Responsibilities:
-  - Fetch stint data via FastF1 tools
-  - Reason about compound choices and degradation using an LLM
-  - Write a structured TireAnalysis back to AgentState
-
-This agent does ONE thing and does it well.
-"""
+from dotenv import load_dotenv
+load_dotenv()
 
 import json
+import time
 import structlog
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from graph.state import AgentState, TireAnalysis
 from tools.fastf1_tools import get_driver_stints, get_race_context
-from dotenv import load_dotenv
-
-load_dotenv()
+from observability.tracing import agent_observation, generation_observation
 
 log = structlog.get_logger()
 
-# ── LLM setup ────────────────────────────────────────────────────────────────
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
-# ── System Prompt ─────────────────────────────────────────────────────────────
 TIRE_SYSTEM_PROMPT = """
 You are an expert F1 tyre strategist working for a top constructor.
 
@@ -51,12 +40,7 @@ STRICT RULES:
 """
 
 
-# ── Data Formatter ────────────────────────────────────────────────────────────
 def format_stint_data(year: int, grand_prix: str, driver: str) -> str:
-    """
-    Fetches stint data and formats it into a clean string for the LLM.
-    The LLM doesn't need raw dataframes — it needs structured, readable context.
-    """
     context = get_race_context(year, grand_prix)
     stints = get_driver_stints(year, grand_prix, driver)
 
@@ -80,52 +64,55 @@ def format_stint_data(year: int, grand_prix: str, driver: str) -> str:
     return "\n".join(lines)
 
 
-# ── Agent Runner ──────────────────────────────────────────────────────────────
 def run_tire_agent(state: AgentState) -> dict:
-    """
-    LangGraph node function for the Tire Agent.
-    Reads from state, calls LLM, writes TireAnalysis back to state.
-    """
-    year        = state["year"]
-    grand_prix  = state["grand_prix"]
-    driver      = state["driver"]
+    year       = state["year"]
+    grand_prix = state["grand_prix"]
+    driver     = state["driver"]
 
     log.info("tire_agent_start", driver=driver, grand_prix=grand_prix, year=year)
 
     try:
-        # 1. Fetch and format data from FastF1
-        stint_text = format_stint_data(year, grand_prix, driver)
-        log.info("tire_agent_data_ready", char_count=len(stint_text))
+        with agent_observation("tire_agent", {"driver": driver, "grand_prix": grand_prix, "year": year}) as obs:
 
-        # 2. Call the LLM
-        messages = [
-            SystemMessage(content=TIRE_SYSTEM_PROMPT),
-            HumanMessage(content=stint_text),
-        ]
-        response = llm.invoke(messages)
-        raw = response.content.strip()
-        log.info("tire_agent_llm_response", raw=raw)
+            # 1. Fetch and format data
+            stint_text = format_stint_data(year, grand_prix, driver)
 
-        # 3. Parse the JSON response
-        parsed = json.loads(raw)
+            # 2. LLM call — wrapped in a generation observation
+            messages = [
+                SystemMessage(content=TIRE_SYSTEM_PROMPT),
+                HumanMessage(content=stint_text),
+            ]
 
-        # 4. Build typed TireAnalysis
-        stints = get_driver_stints(year, grand_prix, driver)
-        tire_analysis = TireAnalysis(
-            driver=driver,
-            stints=[s.__dict__ for s in stints],
-            recommended_compounds=parsed["recommended_compounds"],
-            optimal_pit_laps=parsed["optimal_pit_laps"],
-            summary=parsed["summary"],
-        )
+            with generation_observation("tire_agent", "gpt-4o-mini", stint_text) as gen:
+                response = llm.invoke(messages)
+                raw = response.content.strip()
+                gen.update(output=raw)
 
-        log.info(
-            "tire_agent_complete",
-            compounds=tire_analysis.recommended_compounds,
-            pit_laps=tire_analysis.optimal_pit_laps,
-        )
+            # 3. Parse response
+            parsed = json.loads(raw)
+            stints = get_driver_stints(year, grand_prix, driver)
+            tire_analysis = TireAnalysis(
+                driver=driver,
+                stints=[s.__dict__ for s in stints],
+                recommended_compounds=parsed["recommended_compounds"],
+                optimal_pit_laps=parsed["optimal_pit_laps"],
+                summary=parsed["summary"],
+            )
 
-        return {"tire_analysis": tire_analysis}
+            # 4. Update agent observation with output
+            obs.update(output={
+                "compounds": tire_analysis.recommended_compounds,
+                "pit_laps":  tire_analysis.optimal_pit_laps,
+                "summary":   tire_analysis.summary,
+            })
+
+            log.info(
+                "tire_agent_complete",
+                compounds=tire_analysis.recommended_compounds,
+                pit_laps=tire_analysis.optimal_pit_laps,
+            )
+
+            return {"tire_analysis": tire_analysis}
 
     except Exception as e:
         log.error("tire_agent_error", error=str(e))

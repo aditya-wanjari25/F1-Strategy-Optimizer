@@ -17,6 +17,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from graph.state import AgentState, CompetitorAnalysis
 from tools.fastf1_tools import get_pit_stop_summary, get_driver_laps, get_race_context
+from observability.tracing import agent_observation, generation_observation
 
 log = structlog.get_logger()
 
@@ -120,36 +121,39 @@ def run_competitor_agent(state: AgentState) -> dict:
     log.info("competitor_agent_start", driver=driver, grand_prix=grand_prix, year=year)
 
     try:
-        # 1. Format competitor data
-        competitor_text = format_competitor_data(year, grand_prix, driver)
-        log.info("competitor_agent_data_ready", char_count=len(competitor_text))
+        with agent_observation("competitor_agent", {"driver": driver, "grand_prix": grand_prix, "year": year}) as obs:
 
-        # 2. Call the LLM
-        messages = [
-            SystemMessage(content=COMPETITOR_SYSTEM_PROMPT),
-            HumanMessage(content=competitor_text),
-        ]
-        response = llm.invoke(messages)
-        raw = response.content.strip()
-        log.info("competitor_agent_llm_response", raw=raw)
+            competitor_text = format_competitor_data(year, grand_prix, driver)
 
-        # 3. Parse response
-        parsed = json.loads(raw)
+            messages = [
+                SystemMessage(content=COMPETITOR_SYSTEM_PROMPT),
+                HumanMessage(content=competitor_text),
+            ]
 
-        # 4. Build typed CompetitorAnalysis
-        competitor_analysis = CompetitorAnalysis(
-            undercut_opportunities=parsed["undercut_opportunities"],
-            overcut_opportunities=parsed["overcut_opportunities"],
-            summary=parsed["summary"],
-        )
+            with generation_observation("competitor_agent", "gpt-4o-mini", competitor_text) as gen:
+                response = llm.invoke(messages)
+                raw = response.content.strip()
+                gen.update(output=raw)
 
-        log.info(
-            "competitor_agent_complete",
-            undercuts=len(competitor_analysis.undercut_opportunities),
-            overcuts=len(competitor_analysis.overcut_opportunities),
-        )
+            parsed = json.loads(raw)
+            competitor_analysis = CompetitorAnalysis(
+                undercut_opportunities=parsed["undercut_opportunities"],
+                overcut_opportunities=parsed["overcut_opportunities"],
+                summary=parsed["summary"],
+            )
 
-        return {"competitor_analysis": competitor_analysis}
+            obs.update(output={
+                "undercuts": len(competitor_analysis.undercut_opportunities),
+                "overcuts":  len(competitor_analysis.overcut_opportunities),
+            })
+
+            log.info(
+                "competitor_agent_complete",
+                undercuts=len(competitor_analysis.undercut_opportunities),
+                overcuts=len(competitor_analysis.overcut_opportunities),
+            )
+
+            return {"competitor_analysis": competitor_analysis}
 
     except Exception as e:
         log.error("competitor_agent_error", error=str(e))
