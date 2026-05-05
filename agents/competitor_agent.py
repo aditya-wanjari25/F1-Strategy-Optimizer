@@ -1,0 +1,156 @@
+"""
+Competitor Agent — Identifies undercut and overcut opportunities.
+
+Responsibilities:
+  - Fetch pit stop data for all drivers via FastF1 tools
+  - Compare rival pit windows against our driver's strategy
+  - Identify undercut/overcut opportunities
+  - Write a structured CompetitorAnalysis back to AgentState
+"""
+
+from dotenv import load_dotenv
+load_dotenv()
+
+import json
+import structlog
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage
+from graph.state import AgentState, CompetitorAnalysis
+from tools.fastf1_tools import get_pit_stop_summary, get_driver_laps, get_race_context
+
+log = structlog.get_logger()
+
+# ── LLM setup ────────────────────────────────────────────────────────────────
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+
+# ── System Prompt ─────────────────────────────────────────────────────────────
+COMPETITOR_SYSTEM_PROMPT = """
+You are an expert F1 race strategist specializing in competitor analysis.
+
+You will be given:
+1. Our driver's lap-by-lap data including their pit stop lap
+2. A summary of when all other drivers pitted
+
+Your job is to identify undercut and overcut opportunities and return a JSON object
+with exactly this shape:
+{
+  "undercut_opportunities": [
+    {"driver": "HAM", "lap": 28, "gap_sec": 2.1, "reasoning": "brief explanation"}
+  ],
+  "overcut_opportunities": [
+    {"driver": "LEC", "lap": 32, "gap_sec": 1.8, "reasoning": "brief explanation"}
+  ],
+  "summary": "2-3 sentence overall assessment of the competitive situation"
+}
+
+STRICT RULES:
+- Undercut opportunity: a rival pitted within 3 laps AFTER our driver could have pitted,
+  where our driver was within 5 seconds of that rival
+- Overcut opportunity: a rival pitted within 3 laps BEFORE our driver could have pitted,
+  where our driver was within 5 seconds of that rival  
+- Only include opportunities where the gap makes it genuinely viable
+- If no opportunities exist for a category return an empty list []
+- Return ONLY the JSON object, no markdown, no explanation outside it
+"""
+
+
+# ── Data Formatter ────────────────────────────────────────────────────────────
+def format_competitor_data(year: int, grand_prix: str, driver: str) -> str:
+    """
+    Builds a focused competitor picture for the LLM:
+    - Our driver's pit lap and lap times around the pit window
+    - All rivals' pit laps
+    """
+    context   = get_race_context(year, grand_prix)
+    our_laps  = get_driver_laps(year, grand_prix, driver)
+    all_pits  = get_pit_stop_summary(year, grand_prix)
+
+    # Find our driver's pit lap (first lap after PitOutTime is not NaT)
+    our_pit_laps = our_laps[our_laps["PitOutTime"].notna()]["LapNumber"].tolist()
+
+    # Rival pit stops — exclude our driver
+    rival_pits = all_pits[all_pits["Driver"] != driver][
+        ["Driver", "PitLap", "NewCompound"]
+    ]
+
+    # Lap times around our pit window (±5 laps) for context
+    if our_pit_laps:
+        pit_lap = int(our_pit_laps[0])
+        window = our_laps[
+            (our_laps["LapNumber"] >= pit_lap - 5) &
+            (our_laps["LapNumber"] <= pit_lap + 5)
+        ][["LapNumber", "LapTimeSec", "Compound"]]
+    else:
+        pit_lap = None
+        window = our_laps.head(10)[["LapNumber", "LapTimeSec", "Compound"]]
+
+    lines = [
+        f"Race: {grand_prix} {year}",
+        f"Our driver: {driver}",
+        f"Total laps: {context.total_laps}",
+        f"Our pit lap(s): {our_pit_laps if our_pit_laps else 'No pit stop detected'}",
+        "",
+        "Our lap times around pit window:",
+    ]
+
+    for _, row in window.iterrows():
+        lines.append(
+            f"  Lap {int(row['LapNumber'])}: {row['LapTimeSec']:.3f}s on {row['Compound']}"
+        )
+
+    lines += ["", "Rival pit stops:"]
+    for _, row in rival_pits.iterrows():
+        lines.append(
+            f"  {row['Driver']} pitted on lap {int(row['PitLap'])} → {row['NewCompound']}"
+        )
+
+    return "\n".join(lines)
+
+
+# ── Agent Runner ──────────────────────────────────────────────────────────────
+def run_competitor_agent(state: AgentState) -> dict:
+    """
+    LangGraph node function for the Competitor Agent.
+    Reads from state, calls LLM, writes CompetitorAnalysis back to state.
+    """
+    year       = state["year"]
+    grand_prix = state["grand_prix"]
+    driver     = state["driver"]
+
+    log.info("competitor_agent_start", driver=driver, grand_prix=grand_prix, year=year)
+
+    try:
+        # 1. Format competitor data
+        competitor_text = format_competitor_data(year, grand_prix, driver)
+        log.info("competitor_agent_data_ready", char_count=len(competitor_text))
+
+        # 2. Call the LLM
+        messages = [
+            SystemMessage(content=COMPETITOR_SYSTEM_PROMPT),
+            HumanMessage(content=competitor_text),
+        ]
+        response = llm.invoke(messages)
+        raw = response.content.strip()
+        log.info("competitor_agent_llm_response", raw=raw)
+
+        # 3. Parse response
+        parsed = json.loads(raw)
+
+        # 4. Build typed CompetitorAnalysis
+        competitor_analysis = CompetitorAnalysis(
+            undercut_opportunities=parsed["undercut_opportunities"],
+            overcut_opportunities=parsed["overcut_opportunities"],
+            summary=parsed["summary"],
+        )
+
+        log.info(
+            "competitor_agent_complete",
+            undercuts=len(competitor_analysis.undercut_opportunities),
+            overcuts=len(competitor_analysis.overcut_opportunities),
+        )
+
+        return {"competitor_analysis": competitor_analysis}
+
+    except Exception as e:
+        log.error("competitor_agent_error", error=str(e))
+        return {"errors": state.get("errors", []) + [f"CompetitorAgent: {str(e)}"]}
