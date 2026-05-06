@@ -17,6 +17,8 @@ dependencies = [
     "rich>=13.0.0",
     "structlog>=24.0.0",
     "langfuse>=4.5.1",
+    "fastapi>=0.136.1",
+    "uvicorn>=0.46.0",
 ]
 
 [project.optional-dependencies]
