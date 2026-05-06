@@ -1,24 +1,37 @@
 """
 Shared state for the F1 Strategy Optimizer graph.
 
-This is the single source of truth that flows through every agent.
-Each agent reads what it needs and writes back its findings.
-LangGraph merges writes automatically using the `Annotated` reducers.
+For parallel agent execution, each agent output field needs a reducer
+that tells LangGraph how to merge concurrent writes safely.
 """
 
-from typing import Annotated
-from dataclasses import dataclass, field
+from typing import Annotated, Any
+from dataclasses import dataclass
 from langgraph.graph.message import add_messages
 from langchain_core.messages import BaseMessage
 
 
+# ── Reducer for parallel agent outputs ───────────────────────────────────────
+def keep_latest(current: Any, update: Any) -> Any:
+    """
+    Reducer that keeps the latest non-None write.
+    Used for fields that only one agent writes to —
+    prevents a parallel agent returning None from wiping
+    a completed agent's output.
+    """
+    if update is None:
+        return current
+    return update
+
+
+# ── Agent output dataclasses ──────────────────────────────────────────────────
 @dataclass
 class TireAnalysis:
     driver: str
-    stints: list[dict]          # raw stint data from FastF1
+    stints: list[dict]
     recommended_compounds: list[str]
     optimal_pit_laps: list[int]
-    summary: str                # human-readable finding from the Tire Agent
+    summary: str
 
 
 @dataclass
@@ -31,12 +44,12 @@ class WeatherAnalysis:
 
 @dataclass
 class CompetitorAnalysis:
-    undercut_opportunities: list[dict]   # {driver, lap, gap_sec}
+    undercut_opportunities: list[dict]
     overcut_opportunities: list[dict]
     summary: str
 
 
-@dataclass 
+@dataclass
 class StrategyRecommendation:
     pit_laps: list[int]
     compounds: list[str]
@@ -44,31 +57,30 @@ class StrategyRecommendation:
     confidence: str             # "high", "medium", "low"
 
 
-class AgentState(dict):
-    """
-    The shared state passed between all nodes in the LangGraph graph.
-    
-    We subclass dict so LangGraph can merge partial updates from each agent
-    without overwriting the whole state.
-    """
+# ── Errors reducer ────────────────────────────────────────────────────────────
+def merge_errors(current: list, update: list) -> list:
+    """Merges error lists from parallel agents without losing any."""
+    if not update:
+        return current
+    return current + update
 
-    # ── Inputs (set once at the start) ──────────────────────────────────────
+
+# ── Shared state ──────────────────────────────────────────────────────────────
+class AgentState(dict):
+    # ── Inputs ───────────────────────────────────────────────────────────────
     year: int
     grand_prix: str
     driver: str
 
-    # ── Agent findings (each agent populates its own section) ────────────────
-    tire_analysis: TireAnalysis | None
-    weather_analysis: WeatherAnalysis | None
-    competitor_analysis: CompetitorAnalysis | None
+    # ── Agent outputs — each uses keep_latest reducer ─────────────────────────
+    tire_analysis:      Annotated[TireAnalysis | None,      keep_latest]
+    weather_analysis:   Annotated[WeatherAnalysis | None,   keep_latest]
+    competitor_analysis: Annotated[CompetitorAnalysis | None, keep_latest]
+    strategy_recommendation: Annotated[StrategyRecommendation | None, keep_latest]
 
-    # ── Final output ─────────────────────────────────────────────────────────
-    strategy_recommendation: StrategyRecommendation | None
-
-    # ── Message history (LangGraph built-in — tracks agent conversation) ─────
+    # ── Message history ───────────────────────────────────────────────────────
     messages: Annotated[list[BaseMessage], add_messages]
 
-    # ── Control flow ─────────────────────────────────────────────────────────
-    next_agent: str             # supervisor uses this to route to next agent
-    errors: list[str]           # any agent can append errors here
-    trace: object | None        # LangFuse trace object for observability
+    # ── Control flow ──────────────────────────────────────────────────────────
+    next_agent: str
+    errors: Annotated[list[str], merge_errors]
