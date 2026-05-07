@@ -20,6 +20,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from graph.state import AgentState, StrategyRecommendation
 from observability.tracing import agent_observation, generation_observation
+from tools.retry import safe_llm_call
 
 log = structlog.get_logger()
 
@@ -116,11 +117,10 @@ def run_synthesizer(state: AgentState) -> dict:
             ]
 
             with generation_observation("synthesizer", "gpt-4o", findings_text) as gen:
-                response = llm.invoke(messages)
-                raw = response.content.strip()
+                parsed, raw = safe_llm_call(llm, messages, "synthesizer")
                 gen.update(output=raw)
 
-            parsed = json.loads(raw)
+            # parsed = json.loads(raw)
             recommendation = StrategyRecommendation(
                 pit_laps=parsed["pit_laps"],
                 compounds=parsed["compounds"],

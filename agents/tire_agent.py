@@ -9,6 +9,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from graph.state import AgentState, TireAnalysis
 from tools.fastf1_tools import get_driver_stints, get_race_context
 from observability.tracing import agent_observation, generation_observation
+from tools.retry import safe_llm_call
 
 log = structlog.get_logger()
 
@@ -84,12 +85,11 @@ def run_tire_agent(state: AgentState) -> dict:
             ]
 
             with generation_observation("tire_agent", "gpt-4o-mini", stint_text) as gen:
-                response = llm.invoke(messages)
-                raw = response.content.strip()
+                parsed, raw = safe_llm_call(llm, messages, "tire_agent")
                 gen.update(output=raw)
 
             # 3. Parse response
-            parsed = json.loads(raw)
+            # parsed = json.loads(raw)
             stints = get_driver_stints(year, grand_prix, driver)
             tire_analysis = TireAnalysis(
                 driver=driver,

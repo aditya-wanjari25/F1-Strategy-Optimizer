@@ -18,6 +18,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from graph.state import AgentState, CompetitorAnalysis
 from tools.fastf1_tools import get_pit_stop_summary, get_driver_laps, get_race_context
 from observability.tracing import agent_observation, generation_observation
+from tools.retry import safe_llm_call
 
 log = structlog.get_logger()
 
@@ -131,11 +132,10 @@ def run_competitor_agent(state: AgentState) -> dict:
             ]
 
             with generation_observation("competitor_agent", "gpt-4o-mini", competitor_text) as gen:
-                response = llm.invoke(messages)
-                raw = response.content.strip()
+                parsed, raw = safe_llm_call(llm, messages, "competitor_agent")
                 gen.update(output=raw)
 
-            parsed = json.loads(raw)
+            # parsed = json.loads(raw)
             competitor_analysis = CompetitorAnalysis(
                 undercut_opportunities=parsed["undercut_opportunities"],
                 overcut_opportunities=parsed["overcut_opportunities"],

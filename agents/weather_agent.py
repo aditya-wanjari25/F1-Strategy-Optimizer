@@ -17,6 +17,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from graph.state import AgentState, WeatherAnalysis
 from tools.fastf1_tools import get_race_weather
 from observability.tracing import agent_observation, generation_observation
+from tools.retry import safe_llm_call
 
 
 log = structlog.get_logger()
@@ -111,11 +112,10 @@ def run_weather_agent(state: AgentState) -> dict:
             ]
 
             with generation_observation("weather_agent", "gpt-4o-mini", weather_text) as gen:
-                response = llm.invoke(messages)
-                raw = response.content.strip()
+                parsed, raw = safe_llm_call(llm, messages, "weather_agent")
                 gen.update(output=raw)
 
-            parsed = json.loads(raw)
+            # parsed = json.loads(raw)
             weather_analysis = WeatherAnalysis(
                 has_rain=parsed["has_rain"],
                 track_temp_trend=parsed["track_temp_trend"],
