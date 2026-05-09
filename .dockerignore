@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Local env and secrets
+.env
+
+# FastF1 cache — handled by Docker volume instead
+fastf1_cache/
+
+# Dev and git
+.git/
+.gitignore
+.pytest_cache/
+tests/
+
+# Docs
+README.md
+LEARNINGS.md
+*.txt

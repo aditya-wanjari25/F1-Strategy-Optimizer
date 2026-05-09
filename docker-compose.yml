@@ -1,0 +1,31 @@
+services:
+  api:
+    build: .
+    container_name: f1-strategy-optimizer
+    ports:
+      - "8000:8000"
+
+    # ── Secrets passed as env vars — never baked into the image ──────────────
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_HOST=${LANGFUSE_HOST}
+
+    # ── Persist FastF1 cache between restarts ─────────────────────────────────
+    volumes:
+      - fastf1_cache:/app/fastf1_cache
+
+    # ── Restart policy ────────────────────────────────────────────────────────
+    restart: unless-stopped
+
+    # ── Resource limits ───────────────────────────────────────────────────────
+    # FastF1 + LLM calls can be memory hungry
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+volumes:
+  fastf1_cache:
+    driver: local
