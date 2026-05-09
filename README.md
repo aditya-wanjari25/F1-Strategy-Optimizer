@@ -18,6 +18,7 @@ supervisor
     ├── tire_agent ──────┐
     ├── weather_agent ───┼──→ synthesizer → recommendation
     └── competitor_agent ┘
+         (parallel)
 ```
 
 ---
@@ -27,26 +28,28 @@ supervisor
 ```
 f1-strategy-optimizer/
 ├── agents/
-│   ├── tire_agent.py         # Tyre degradation and compound analysis
-│   ├── weather_agent.py      # Weather risk assessment
-│   ├── competitor_agent.py   # Undercut/overcut opportunity detection
-│   └── synthesizer.py        # Final strategy synthesis
+│   ├── tire_agent.py           # Tyre degradation and compound analysis
+│   ├── weather_agent.py        # Weather risk assessment
+│   ├── competitor_agent.py     # Undercut/overcut opportunity detection
+│   └── synthesizer.py          # Final strategy synthesis
 ├── api/
-│   ├── app.py                # FastAPI application factory
-│   ├── job_store.py          # Thread-safe in-memory job store
-│   ├── models.py             # Pydantic request/response models
-│   └── router.py             # REST endpoints
+│   ├── app.py                  # FastAPI application factory
+│   ├── job_store.py            # Thread-safe in-memory job store
+│   ├── models.py               # Pydantic request/response models
+│   └── router.py               # REST endpoints
 ├── graph/
-│   ├── state.py              # Shared AgentState with typed reducers
-│   └── workflow.py           # LangGraph graph definition
+│   ├── state.py                # Shared AgentState with typed reducers
+│   └── workflow.py             # LangGraph graph definition
 ├── observability/
-│   └── tracing.py            # Langfuse tracing helpers
+│   └── tracing.py              # Langfuse tracing helpers
 ├── tools/
-│   ├── fastf1_tools.py       # FastF1 data layer
-│   └── retry.py              # Exponential backoff and JSON repair
-├── tests/                    # Unit tests per agent and tool
-├── main.py                   # CLI entrypoint
-└── server.py                 # Uvicorn server entrypoint
+│   ├── fastf1_tools.py         # FastF1 data layer
+│   └── retry.py                # Exponential backoff and JSON repair
+├── tests/                      # Unit tests per agent and tool
+├── Dockerfile                  # Container image definition
+├── docker-compose.yml          # Multi-container orchestration
+├── main.py                     # CLI entrypoint
+└── server.py                   # Uvicorn server entrypoint
 ```
 
 ---
@@ -62,37 +65,51 @@ f1-strategy-optimizer/
 | Observability | Langfuse v4 |
 | Resilience | Exponential backoff + JSON repair |
 | Logging | structlog |
+| Containerization | Docker + Docker Compose |
 | Package manager | uv |
 
 ---
 
 ## Quickstart
 
-### 1. Clone and install
+### Option A — Docker (recommended)
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/f1-strategy-optimizer.git
 cd f1-strategy-optimizer
-uv sync
-uv sync --extra dev
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your API keys
+
+# Build and run
+docker compose up
 ```
 
-### 2. Configure environment
+The API will be available at `http://localhost:8000`.
+
+FastF1 race data is cached in a Docker volume — first run downloads data, subsequent runs use the cache.
+
+### Option B — Local
 
 ```bash
+git clone https://github.com/YOUR_USERNAME/f1-strategy-optimizer.git
+cd f1-strategy-optimizer
+
+# Install dependencies
+uv sync
+uv sync --extra dev
+
+# Configure environment
 cp .env.example .env
+# Edit .env with your API keys
 ```
 
-Edit `.env`:
+---
 
-```env
-OPENAI_API_KEY=sk-...
-LANGFUSE_PUBLIC_KEY=pk-lf-...
-LANGFUSE_SECRET_KEY=sk-lf-...
-LANGFUSE_HOST=https://cloud.langfuse.com
-```
+## Usage
 
-### 3. Run via CLI
+### CLI
 
 ```bash
 uv run python main.py --year 2023 --gp Bahrain --driver VER
@@ -126,7 +143,7 @@ Example output:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 4. Run via REST API
+### REST API
 
 Start the server:
 
@@ -134,21 +151,30 @@ Start the server:
 uv run python server.py
 ```
 
-Submit a strategy job:
+**Submit a strategy job:**
 
 ```bash
 curl -X POST http://localhost:8000/strategy \
   -H "Content-Type: application/json" \
   -d '{"year": 2023, "grand_prix": "Bahrain", "driver": "VER"}'
 
-# Returns immediately:
+# Returns immediately with job_id:
 # {"job_id": "abc-123", "status": "pending", ...}
 ```
 
-Poll for result:
+**Poll for result:**
 
 ```bash
 curl http://localhost:8000/strategy/abc-123
+
+# status: pending → running → complete
+```
+
+**Health check:**
+
+```bash
+curl http://localhost:8000/health
+# {"status": "ok", "version": "0.1.0"}
 ```
 
 Interactive API docs: [http://localhost:8000/docs](http://localhost:8000/docs)
@@ -161,32 +187,15 @@ Interactive API docs: [http://localhost:8000/docs](http://localhost:8000/docs)
 The system uses a **supervisor fan-out** pattern — a lightweight supervisor kicks off three specialist agents in parallel, waits for all to complete, then routes to a synthesizer. Each agent has a single responsibility and writes to its own isolated section of shared state.
 
 ### Parallel Execution
-The three specialist agents run **concurrently** via LangGraph's fan-out edges. Total latency is `max(tire, weather, competitor)` rather than their sum — roughly 60% faster than sequential execution.
+The three specialist agents run **concurrently** via LangGraph's fan-out edges. Total latency is `max(tire, weather, competitor)` rather than their sum — roughly 60% faster than sequential execution. Confirmed via overlapping spans in Langfuse.
 
 ### Resilience
 Every LLM call is wrapped with:
-- **Exponential backoff retry** — handles rate limits and transient failures
-- **JSON repair** — handles markdown fences, preamble text, and trailing noise from LLM responses
+- **Exponential backoff retry** — handles rate limits and transient failures (3 attempts, 1s → 2s → 4s delay)
+- **JSON repair** — handles markdown fences, preamble text, trailing noise, and single quotes in LLM responses
 
 ### Observability
-Every graph run produces a **Langfuse trace** with nested spans per agent and generations per LLM call. You get token counts, cost, and latency breakdown per agent out of the box.
-
-### Async Job Pattern
-The REST API returns a `job_id` immediately (HTTP 202 Accepted) and runs the graph in a background thread. Clients poll `GET /strategy/{job_id}` for results. This prevents HTTP timeouts on long-running agent graphs.
-
----
-
-## Running Tests
-
-```bash
-uv run pytest tests/ -v
-```
-
----
-
-## Observability
-
-Traces are sent to [Langfuse](https://langfuse.com). Each run produces:
+Every graph run produces a **Langfuse trace** with nested spans per agent and generations per LLM call. Token counts, cost, and latency are tracked per agent out of the box.
 
 ```
 f1_strategy_optimizer
@@ -200,15 +209,25 @@ f1_strategy_optimizer
         └── synthesizer_llm
 ```
 
----
+### Async Job Pattern
+The REST API returns a `job_id` immediately (HTTP 202 Accepted) and runs the graph in a background thread. Clients poll `GET /strategy/{job_id}` for results. This prevents HTTP timeouts on long-running agent graphs.
 
-## Environment Variables
-
-| Variable | Description |
-|---|---|
-| `OPENAI_API_KEY` | OpenAI API key |
-| `LANGFUSE_PUBLIC_KEY` | Langfuse public key |
-| `LANGFUSE_SECRET_KEY` | Langfuse secret key |
-| `LANGFUSE_HOST` | Langfuse host (default: https://cloud.langfuse.com) |
+### Docker Deployment
+The FastAPI server runs in a `python:3.11-slim` container. Dependency installation is layer-cached — rebuilds after code changes take seconds. FastF1 cache is persisted via a named Docker volume so race data survives container restarts.
 
 ---
+
+## Running Tests
+
+```bash
+uv run pytest tests/ -v
+```
+
+Test coverage:
+- FastF1 data layer (5 tools)
+- Tire Agent (data formatting + LLM output)
+- Weather Agent (data formatting + LLM output)
+- Competitor Agent (data formatting + LLM output)
+- Synthesizer Agent (multi-signal reconciliation)
+- Retry and JSON repair utilities (6 cases)
+- Full graph compilation and end-to-end run
