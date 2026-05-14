@@ -97,12 +97,13 @@ def get_driver_stints(year: int, grand_prix: str, driver: str) -> list[StintInfo
         log.warning("no_laps_found", driver=driver)
         return []
 
-    # Detect new stint when TyreLife resets (drops) or compound changes
-    # This is more robust than checking TyreLife == 1
-  # Detect new stint only when compound changes — gaps in accurate laps don't count
+    # Detect new stint when:
+    # 1. Compound changes (different tyre)
+    # 2. TyreLife drops (same compound, pitted again)
     laps["NewStint"] = (
-    laps["Compound"] != laps["Compound"].shift(1)
-    ).fillna(True)  # first lap is always a new stint # first lap is always a new stint
+        (laps["Compound"] != laps["Compound"].shift(1)) |
+        (laps["TyreLife"] < laps["TyreLife"].shift(1))
+    ).fillna(True)
 
     laps["StintNumber"] = laps["NewStint"].cumsum()
 
@@ -130,7 +131,6 @@ def get_driver_stints(year: int, grand_prix: str, driver: str) -> list[StintInfo
 
     log.info("stints_computed", driver=driver, stint_count=len(stints))
     return stints
-
 
 # ── Tool 4: Weather Data ─────────────────────────────────────────────────────
 def get_race_weather(year: int, grand_prix: str) -> pd.DataFrame:
