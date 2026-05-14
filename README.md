@@ -13,13 +13,10 @@ Given a race, year, and driver, the system spins up four specialized AI agents t
 - **Competitor Agent** — identifies undercut and overcut opportunities vs rivals
 - **Synthesizer Agent** — reconciles all three findings into a single justified strategy
 
-```
-supervisor
-    ├── tire_agent ──────┐
-    ├── weather_agent ───┼──→ synthesizer → recommendation
-    └── competitor_agent ┘
-         (parallel)
-```
+
+<img width="634" height="677" alt="image" src="https://github.com/user-attachments/assets/2e89f5fd-03e7-4fb6-b758-151d0328348f" />
+
+
 
 ---
 
