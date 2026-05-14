@@ -23,34 +23,26 @@ supervisor
 
 ---
 
-## Architecture
+## Eval Results
 
-```
-f1-strategy-optimizer/
-├── agents/
-│   ├── tire_agent.py           # Tyre degradation and compound analysis
-│   ├── weather_agent.py        # Weather risk assessment
-│   ├── competitor_agent.py     # Undercut/overcut opportunity detection
-│   └── synthesizer.py          # Final strategy synthesis
-├── api/
-│   ├── app.py                  # FastAPI application factory
-│   ├── job_store.py            # Thread-safe in-memory job store
-│   ├── models.py               # Pydantic request/response models
-│   └── router.py               # REST endpoints
-├── graph/
-│   ├── state.py                # Shared AgentState with typed reducers
-│   └── workflow.py             # LangGraph graph definition
-├── observability/
-│   └── tracing.py              # Langfuse tracing helpers
-├── tools/
-│   ├── fastf1_tools.py         # FastF1 data layer
-│   └── retry.py                # Exponential backoff and JSON repair
-├── tests/                      # Unit tests per agent and tool
-├── Dockerfile                  # Container image definition
-├── docker-compose.yml          # Multi-container orchestration
-├── main.py                     # CLI entrypoint
-└── server.py                   # Uvicorn server entrypoint
-```
+Tested against 10 manually curated cases across 5 circuits from the 2023 season:
+
+| Metric | Score |
+|---|---|
+| Overall score | **0.88 / 1.00** |
+| Compound accuracy | **90%** |
+| Avg pit lap delta | **1.6 laps** |
+| Stint count match | **9 / 10** |
+
+**Breakdown by circuit type:**
+
+| Circuit Type | Cases | Avg Score |
+|---|---|---|
+| High degradation (Bahrain, Abu Dhabi) | 4 | 0.97 |
+| Mixed (British) | 2 | 0.88 |
+| Low degradation (Monaco, Monza) | 4 | 0.79 |
+
+Known limitation: rain-affected races with late safety car interventions score lower — the system has no real-time race state awareness and cannot predict strategy errors by teams.
 
 ---
 
@@ -64,6 +56,7 @@ f1-strategy-optimizer/
 | REST API | FastAPI + Uvicorn |
 | Observability | Langfuse v4 |
 | Resilience | Exponential backoff + JSON repair |
+| Evals | Custom scorer with ground truth dataset |
 | Logging | structlog |
 | Containerization | Docker + Docker Compose |
 | Package manager | uv |
@@ -113,6 +106,8 @@ cp .env.example .env
 
 ```bash
 uv run python main.py --year 2023 --gp Bahrain --driver VER
+uv run python main.py --year 2023 --gp British --driver LEC
+uv run python main.py --year 2023 --gp Italian --driver SAI
 ```
 
 Example output:
@@ -124,8 +119,8 @@ Example output:
 ╚══════════════════════════════════════╝
 
 🔧 Tyre Analysis
-  Compounds : SOFT → HARD
-  Pit laps  : [35]
+  Compounds : SOFT → SOFT → HARD
+  Pit laps  : [14, 36]
 
 🌡  Weather Analysis
   Rain      : False
@@ -133,13 +128,13 @@ Example output:
   Risk      : LOW
 
 🏁 Competitor Analysis
-  Undercuts : GAS on lap 10 (gap: 4.0s)
+  Undercuts : HAM on lap 13 (gap: 3.2s)
 
 ┌─────────────────────────────────────────────────────────────────┐
 │ RECOMMENDED STRATEGY                    Confidence: HIGH        │
 │                                                                  │
-│ Start on SOFT, pit lap 35 for HARD. Weather poses no risk.      │
-│ Undercut vs GAS not viable given 4s gap. High confidence.       │
+│ Two-stop SOFT-SOFT-HARD strategy. Pit lap 14 and 36.            │
+│ Weather poses no risk. Undercut vs HAM not viable. High conf.   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -166,7 +161,6 @@ curl -X POST http://localhost:8000/strategy \
 
 ```bash
 curl http://localhost:8000/strategy/abc-123
-
 # status: pending → running → complete
 ```
 
@@ -178,6 +172,21 @@ curl http://localhost:8000/health
 ```
 
 Interactive API docs: [http://localhost:8000/docs](http://localhost:8000/docs)
+
+### Running Evals
+
+```bash
+# Run all 10 cases
+uv run python -m evals.run_evals
+
+# Run a single case
+uv run python -m evals.run_evals --year 2023 --gp Italian --driver VER
+
+# Run by circuit type
+uv run python -m evals.run_evals --circuit high_deg
+uv run python -m evals.run_evals --circuit low_deg
+uv run python -m evals.run_evals --circuit mixed
+```
 
 ---
 
@@ -197,17 +206,17 @@ Every LLM call is wrapped with:
 ### Observability
 Every graph run produces a **Langfuse trace** with nested spans per agent and generations per LLM call. Token counts, cost, and latency are tracked per agent out of the box.
 
-```
-f1_strategy_optimizer
-  ├── tire_agent
-  │     └── tire_agent_llm
-  ├── weather_agent
-  │     └── weather_agent_llm
-  ├── competitor_agent
-  │     └── competitor_agent_llm
-  └── synthesizer
-        └── synthesizer_llm
-```
+
+### Eval Framework
+A rigorous eval system scores recommendations against manually curated ground truth:
+
+- **Compound accuracy** — % of compounds correctly predicted per stint
+- **Pit lap delta** — average absolute difference in pit lap numbers
+- **Stint count match** — correct number of stops predicted
+- **Weighted composite** — safety car and rain cases adjust weights automatically
+- **DNF/DNS handling** — DNF cases excluded from position scoring, DNS excluded entirely
+
+The eval framework drove a real data layer fix: detecting same-compound multi-stop strategies via TyreLife drops improved overall score from **0.63 → 0.88**.
 
 ### Async Job Pattern
 The REST API returns a `job_id` immediately (HTTP 202 Accepted) and runs the graph in a background thread. Clients poll `GET /strategy/{job_id}` for results. This prevents HTTP timeouts on long-running agent graphs.
@@ -230,4 +239,6 @@ Test coverage:
 - Competitor Agent (data formatting + LLM output)
 - Synthesizer Agent (multi-signal reconciliation)
 - Retry and JSON repair utilities (6 cases)
+- Eval scorer (7 cases including DNF, SC, rain handling)
 - Full graph compilation and end-to-end run
+
