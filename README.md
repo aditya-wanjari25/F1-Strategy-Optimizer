@@ -20,6 +20,45 @@ Given a race, year, and driver, the system spins up four specialized AI agents t
 
 ---
 
+
+## Key Engineering Concepts
+
+### Multi-Agent Pattern
+The system uses a **supervisor fan-out** pattern — a lightweight supervisor kicks off three specialist agents in parallel, waits for all to complete, then routes to a synthesizer. Each agent has a single responsibility and writes to its own isolated section of shared state.
+
+### Parallel Execution
+The three specialist agents run **concurrently** via LangGraph's fan-out edges. Total latency is `max(tire, weather, competitor)` rather than their sum — roughly 60% faster than sequential execution. Confirmed via overlapping spans in Langfuse.
+
+### Resilience
+Every LLM call is wrapped with:
+- **Exponential backoff retry** — handles rate limits and transient failures (3 attempts, 1s → 2s → 4s delay)
+- **JSON repair** — handles markdown fences, preamble text, trailing noise, and single quotes in LLM responses
+
+### Observability
+Every graph run produces a **Langfuse trace** with nested spans per agent and generations per LLM call. Token counts, cost, and latency are tracked per agent out of the box.
+
+
+### Eval Framework
+A rigorous eval system scores recommendations against manually curated ground truth:
+
+- **Compound accuracy** — % of compounds correctly predicted per stint
+- **Pit lap delta** — average absolute difference in pit lap numbers
+- **Stint count match** — correct number of stops predicted
+- **Weighted composite** — safety car and rain cases adjust weights automatically
+- **DNF/DNS handling** — DNF cases excluded from position scoring, DNS excluded entirely
+
+The eval framework drove a real data layer fix: detecting same-compound multi-stop strategies via TyreLife drops improved overall score from **0.63 → 0.88**.
+
+### Async Job Pattern
+The REST API returns a `job_id` immediately (HTTP 202 Accepted) and runs the graph in a background thread. Clients poll `GET /strategy/{job_id}` for results. This prevents HTTP timeouts on long-running agent graphs.
+
+### Docker Deployment
+The FastAPI server runs in a `python:3.11-slim` container. Dependency installation is layer-cached — rebuilds after code changes take seconds. FastF1 cache is persisted via a named Docker volume so race data survives container restarts.
+
+
+---
+
+
 ## Eval Results
 
 Tested against 10 manually curated cases across 5 circuits from the 2023 season:
@@ -185,45 +224,8 @@ uv run python -m evals.run_evals --circuit low_deg
 uv run python -m evals.run_evals --circuit mixed
 ```
 
----
 
-## Key Engineering Concepts
-
-### Multi-Agent Pattern
-The system uses a **supervisor fan-out** pattern — a lightweight supervisor kicks off three specialist agents in parallel, waits for all to complete, then routes to a synthesizer. Each agent has a single responsibility and writes to its own isolated section of shared state.
-
-### Parallel Execution
-The three specialist agents run **concurrently** via LangGraph's fan-out edges. Total latency is `max(tire, weather, competitor)` rather than their sum — roughly 60% faster than sequential execution. Confirmed via overlapping spans in Langfuse.
-
-### Resilience
-Every LLM call is wrapped with:
-- **Exponential backoff retry** — handles rate limits and transient failures (3 attempts, 1s → 2s → 4s delay)
-- **JSON repair** — handles markdown fences, preamble text, trailing noise, and single quotes in LLM responses
-
-### Observability
-Every graph run produces a **Langfuse trace** with nested spans per agent and generations per LLM call. Token counts, cost, and latency are tracked per agent out of the box.
-
-
-### Eval Framework
-A rigorous eval system scores recommendations against manually curated ground truth:
-
-- **Compound accuracy** — % of compounds correctly predicted per stint
-- **Pit lap delta** — average absolute difference in pit lap numbers
-- **Stint count match** — correct number of stops predicted
-- **Weighted composite** — safety car and rain cases adjust weights automatically
-- **DNF/DNS handling** — DNF cases excluded from position scoring, DNS excluded entirely
-
-The eval framework drove a real data layer fix: detecting same-compound multi-stop strategies via TyreLife drops improved overall score from **0.63 → 0.88**.
-
-### Async Job Pattern
-The REST API returns a `job_id` immediately (HTTP 202 Accepted) and runs the graph in a background thread. Clients poll `GET /strategy/{job_id}` for results. This prevents HTTP timeouts on long-running agent graphs.
-
-### Docker Deployment
-The FastAPI server runs in a `python:3.11-slim` container. Dependency installation is layer-cached — rebuilds after code changes take seconds. FastF1 cache is persisted via a named Docker volume so race data survives container restarts.
-
----
-
-## Running Tests
+### Running Tests
 
 ```bash
 uv run pytest tests/ -v
