@@ -46,7 +46,7 @@ def _run_strategy_job(job_id: str, request: StrategyRequest):
     job_store.update(job_id, status=JobStatus.RUNNING)
 
     try:
-        result = run_graph(request.year, request.grand_prix, request.driver)
+        result = run_graph(request.year, request.grand_prix, request.driver, request.mode)
         errors = result.get("errors", [])
 
         if errors:

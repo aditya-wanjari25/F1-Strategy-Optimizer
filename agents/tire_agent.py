@@ -10,6 +10,7 @@ from graph.state import AgentState, TireAnalysis
 from tools.fastf1_tools import get_driver_stints, get_race_context
 from observability.tracing import agent_observation, generation_observation
 from tools.retry import safe_llm_call
+from tools.historical_tools import get_historical_stints
 
 log = structlog.get_logger()
 
@@ -41,14 +42,27 @@ STRICT RULES:
 """
 
 
-def format_stint_data(year: int, grand_prix: str, driver: str) -> str:
-    context = get_race_context(year, grand_prix)
-    stints = get_driver_stints(year, grand_prix, driver)
+def format_stint_data(year: int, grand_prix: str, driver: str, mode: str = "analysis") -> str:
+    """
+    Fetches stint data — from current race or historical average
+    depending on mode.
+    """
+    context = get_race_context(year, grand_prix) if mode == "analysis" else None
+
+    if mode == "prediction":
+        stints = get_historical_stints(grand_prix, lookback_years=3, reference_year=year)
+        total_laps = sum(s.lap_count for s in stints)
+        header = f"Race: {grand_prix} {year} (PRE-RACE PREDICTION — historical avg 3 seasons)"
+    else:
+        context = get_race_context(year, grand_prix)
+        stints = get_driver_stints(year, grand_prix, driver)
+        total_laps = context.total_laps
+        header = f"Race: {grand_prix} {year}"
 
     lines = [
-        f"Race: {grand_prix} {year}",
+        header,
         f"Driver: {driver}",
-        f"Total race laps: {context.total_laps}",
+        f"Total race laps: {total_laps}",
         f"Number of stints: {len(stints)}",
         "",
         "Stint breakdown:",
@@ -69,6 +83,7 @@ def run_tire_agent(state: AgentState) -> dict:
     year       = state["year"]
     grand_prix = state["grand_prix"]
     driver     = state["driver"]
+    mode       = state.get("mode", "analysis")
 
     log.info("tire_agent_start", driver=driver, grand_prix=grand_prix, year=year)
 
@@ -76,7 +91,7 @@ def run_tire_agent(state: AgentState) -> dict:
         with agent_observation("tire_agent", {"driver": driver, "grand_prix": grand_prix, "year": year}) as obs:
 
             # 1. Fetch and format data
-            stint_text = format_stint_data(year, grand_prix, driver)
+            stint_text = format_stint_data(year, grand_prix, driver, mode)
 
             # 2. LLM call — wrapped in a generation observation
             messages = [

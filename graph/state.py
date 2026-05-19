@@ -84,3 +84,5 @@ class AgentState(dict):
     # ── Control flow ──────────────────────────────────────────────────────────
     next_agent: str
     errors: Annotated[list[str], merge_errors]
+
+    mode: str # "analysis" = post-race | "prediction" = pre-race historical

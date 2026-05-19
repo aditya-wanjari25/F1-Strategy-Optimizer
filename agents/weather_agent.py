@@ -18,7 +18,7 @@ from graph.state import AgentState, WeatherAnalysis
 from tools.fastf1_tools import get_race_weather
 from observability.tracing import agent_observation, generation_observation
 from tools.retry import safe_llm_call
-
+from tools.historical_tools import get_historical_weather
 
 log = structlog.get_logger()
 
@@ -60,23 +60,17 @@ STRICT RULES:
 
 
 # ── Data Formatter ────────────────────────────────────────────────────────────
-def format_weather_data(year: int, grand_prix: str) -> str:
-    """
-    Fetches weather snapshots and formats them for the LLM.
-    We sample every 10 snapshots to keep the context concise —
-    the LLM doesn't need every reading, just the trend.
-    """
-    weather = get_race_weather(year, grand_prix)
+def format_weather_data(year: int, grand_prix: str, mode: str = "analysis") -> str:
+    if mode == "prediction":
+        weather = get_historical_weather(grand_prix, lookback_years=3, reference_year=year)
+        header = f"Race: {grand_prix} {year} (PRE-RACE PREDICTION — historical avg 3 seasons)"
+    else:
+        weather = get_race_weather(year, grand_prix)
+        header = f"Race: {grand_prix} {year}"
 
-    # Sample to keep prompt concise — every 10th snapshot
     sampled = weather.iloc[::10].reset_index(drop=True)
 
-    lines = [
-        f"Race: {grand_prix} {year}",
-        f"Total weather snapshots: {len(weather)} (showing every 10th)",
-        "",
-        "Weather readings:",
-    ]
+    lines = [header, f"Total snapshots: {len(weather)} (showing every 10th)", "", "Weather readings:"]
 
     for _, row in sampled.iterrows():
         lines.append(
@@ -98,13 +92,14 @@ def run_weather_agent(state: AgentState) -> dict:
     """
     year       = state["year"]
     grand_prix = state["grand_prix"]
+    mode       = state.get("mode", "analysis")
 
     log.info("weather_agent_start", grand_prix=grand_prix, year=year)
 
     try:
         with agent_observation("weather_agent", {"grand_prix": grand_prix, "year": year}) as obs:
 
-            weather_text = format_weather_data(year, grand_prix)
+            weather_text = format_weather_data(year, grand_prix, mode)
 
             messages = [
                 SystemMessage(content=WEATHER_SYSTEM_PROMPT),

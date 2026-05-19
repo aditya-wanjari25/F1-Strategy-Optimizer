@@ -19,6 +19,7 @@ from graph.state import AgentState, CompetitorAnalysis
 from tools.fastf1_tools import get_pit_stop_summary, get_driver_laps, get_race_context
 from observability.tracing import agent_observation, generation_observation
 from tools.retry import safe_llm_call
+from tools.historical_tools import get_historical_pit_summary
 
 log = structlog.get_logger()
 
@@ -57,57 +58,45 @@ STRICT RULES:
 
 
 # ── Data Formatter ────────────────────────────────────────────────────────────
-def format_competitor_data(year: int, grand_prix: str, driver: str) -> str:
-    """
-    Builds a focused competitor picture for the LLM:
-    - Our driver's pit lap and lap times around the pit window
-    - All rivals' pit laps
-    """
-    context   = get_race_context(year, grand_prix)
-    our_laps  = get_driver_laps(year, grand_prix, driver)
-    all_pits  = get_pit_stop_summary(year, grand_prix)
+def format_competitor_data(year: int, grand_prix: str, driver: str, mode: str = "analysis") -> str:
+    context  = get_race_context(year, grand_prix)
 
-    # Find our driver's pit lap (first lap after PitOutTime is not NaT)
-    our_pit_laps = our_laps[our_laps["PitOutTime"].notna()]["LapNumber"].tolist()
-
-    # Rival pit stops — exclude our driver
-    rival_pits = all_pits[all_pits["Driver"] != driver][
-        ["Driver", "PitLap", "NewCompound"]
-    ]
-
-    # Lap times around our pit window (±5 laps) for context
-    if our_pit_laps:
-        pit_lap = int(our_pit_laps[0])
-        window = our_laps[
-            (our_laps["LapNumber"] >= pit_lap - 5) &
-            (our_laps["LapNumber"] <= pit_lap + 5)
-        ][["LapNumber", "LapTimeSec", "Compound"]]
+    if mode == "prediction":
+        all_pits = get_historical_pit_summary(grand_prix, lookback_years=3, reference_year=year)
+        header = f"Race: {grand_prix} {year} (PRE-RACE PREDICTION — historical pit windows)"
     else:
-        pit_lap = None
-        window = our_laps.head(10)[["LapNumber", "LapTimeSec", "Compound"]]
+        our_laps = get_driver_laps(year, grand_prix, driver)
+        all_pits = get_pit_stop_summary(year, grand_prix)
+        header = f"Race: {grand_prix} {year}"
+
+    rival_pits = all_pits[all_pits["Driver"] != driver][["Driver", "PitLap", "NewCompound"]]
 
     lines = [
-        f"Race: {grand_prix} {year}",
+        header,
         f"Our driver: {driver}",
         f"Total laps: {context.total_laps}",
-        f"Our pit lap(s): {our_pit_laps if our_pit_laps else 'No pit stop detected'}",
         "",
-        "Our lap times around pit window:",
+        "Typical rival pit windows (historical):" if mode == "prediction" else "Rival pit stops:",
     ]
 
-    for _, row in window.iterrows():
-        lines.append(
-            f"  Lap {int(row['LapNumber'])}: {row['LapTimeSec']:.3f}s on {row['Compound']}"
-        )
-
-    lines += ["", "Rival pit stops:"]
-    for _, row in rival_pits.iterrows():
-        lines.append(
-            f"  {row['Driver']} pitted on lap {int(row['PitLap'])} → {row['NewCompound']}"
-        )
+    # Show distribution of pit laps per compound in prediction mode
+    if mode == "prediction":
+        for compound, group in rival_pits.groupby("NewCompound"):
+            avg_lap = round(group["PitLap"].mean())
+            min_lap = int(group["PitLap"].min())
+            max_lap = int(group["PitLap"].max())
+            lines.append(
+                f"  → {compound}: typically lap {avg_lap} (range {min_lap}-{max_lap})"
+            )
+    else:
+        our_laps = get_driver_laps(year, grand_prix, driver)
+        our_pit_laps = our_laps[our_laps["PitOutTime"].notna()]["LapNumber"].tolist()
+        lines.append(f"Our pit lap(s): {our_pit_laps if our_pit_laps else 'No pit stop detected'}")
+        lines.append("")
+        for _, row in rival_pits.iterrows():
+            lines.append(f"  {row['Driver']} pitted on lap {int(row['PitLap'])} → {row['NewCompound']}")
 
     return "\n".join(lines)
-
 
 # ── Agent Runner ──────────────────────────────────────────────────────────────
 def run_competitor_agent(state: AgentState) -> dict:
@@ -118,13 +107,14 @@ def run_competitor_agent(state: AgentState) -> dict:
     year       = state["year"]
     grand_prix = state["grand_prix"]
     driver     = state["driver"]
+    mode       = state.get("mode", "analysis")
 
     log.info("competitor_agent_start", driver=driver, grand_prix=grand_prix, year=year)
 
     try:
         with agent_observation("competitor_agent", {"driver": driver, "grand_prix": grand_prix, "year": year}) as obs:
 
-            competitor_text = format_competitor_data(year, grand_prix, driver)
+            competitor_text = format_competitor_data(year, grand_prix, driver, mode)
 
             messages = [
                 SystemMessage(content=COMPETITOR_SYSTEM_PROMPT),

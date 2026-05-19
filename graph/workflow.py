@@ -92,7 +92,7 @@ def build_graph() -> StateGraph:
 
 
 # ── Convenience runner ────────────────────────────────────────────────────────
-def run_graph(year: int, grand_prix: str, driver: str) -> AgentState:
+def run_graph(year: int, grand_prix: str, driver: str, mode: str = "analysis") -> AgentState:
     lf = get_langfuse()
 
     with lf.start_as_current_observation(
@@ -107,6 +107,7 @@ def run_graph(year: int, grand_prix: str, driver: str) -> AgentState:
             "year": year,
             "grand_prix": grand_prix,
             "driver": driver,
+            "mode": mode,
             "tire_analysis": None,
             "weather_analysis": None,
             "competitor_analysis": None,

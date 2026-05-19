@@ -119,11 +119,19 @@ def main():
     parser.add_argument("--year",   type=int, required=True, help="Race year e.g. 2023")
     parser.add_argument("--gp",     type=str, required=True, help="Grand Prix name e.g. Bahrain")
     parser.add_argument("--driver", type=str, required=True, help="Driver code e.g. VER")
+    parser.add_argument(
+    "--mode",
+    type=str,
+    default="analysis",
+    choices=["analysis", "prediction"],
+    help="analysis = post-race | prediction = pre-race historical"
+)
+
     args = parser.parse_args()
 
     console.print(f"\n[dim]Running strategy analysis for {args.driver} — {args.gp} {args.year}...[/dim]")
 
-    result = run_graph(args.year, args.gp, args.driver)
+    result = run_graph(args.year, args.gp, args.driver,args.mode)
     print_strategy_report(result, args.year, args.gp, args.driver)
 
 

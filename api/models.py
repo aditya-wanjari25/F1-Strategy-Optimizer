@@ -31,6 +31,8 @@ class StrategyRequest(BaseModel):
     year:        int = Field(..., ge=2018, le=2025, description="Race year")
     grand_prix:  str = Field(..., min_length=3,     description="Grand Prix name e.g. Bahrain")
     driver:      str = Field(..., min_length=2, max_length=3, description="Driver code e.g. VER")
+    mode:       str = Field(default="analysis", pattern="^(analysis|prediction)$")
+
 
     model_config = {
         "json_schema_extra": {
